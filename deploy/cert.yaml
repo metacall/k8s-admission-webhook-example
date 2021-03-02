@@ -1,0 +1,110 @@
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: webhook-cert
+  namespace: default
+spec:
+  dnsNames:
+  - webhook.default.svc
+  - webhook.default.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: webhook-issuer
+  secretName: webhook
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: webhook-issuer
+  namespace: default
+spec:
+  selfSigned: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook
+  namespace: default
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      application: webhook
+  template:
+    metadata:
+      labels:
+        application: webhook
+    spec:
+      containers:
+      - name: webhook
+        image: server:metacall
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 443
+        volumeMounts:
+        - name: tls
+          mountPath: "/certs"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 1
+          successThreshold: 2
+          failureThreshold: 1
+        livenessProbe:
+          tcpSocket:
+            port: 443
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 1
+          successThreshold: 1
+          failureThreshold: 1
+      volumes:
+      - name: tls
+        secret:
+          secretName: webhook
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook
+  namespace: default
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 443
+  selector:
+    application: webhook
+---
+apiVersion: admissionregistration.k8s.io/v1beta1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: default/webhook-cert
+  name: validating
+  namespace: default
+webhooks:
+  - name: validating.metacall.io
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: webhook
+        namespace: default
+        path: /validate
+      caBundle: Cg==
+    rules:
+      - apiGroups: ["*"]
+        resources:
+          - "pods"
+          - "pod"
+        apiVersions:
+          - "*"
+        operations:
+          - CREATE
